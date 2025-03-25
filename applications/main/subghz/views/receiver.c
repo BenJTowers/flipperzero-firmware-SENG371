@@ -62,6 +62,7 @@ typedef struct {
     SubGhzViewReceiverBarShow bar_show;
     uint8_t u_rssi;
     SubGhzRadioDeviceType device_type;
+    bool mod_shortcut_enabled;
 } SubGhzViewReceiverModel;
 
 void subghz_receiver_rssi(SubGhzViewReceiver* instance, float rssi) {
@@ -280,7 +281,14 @@ void subghz_view_receiver_draw(Canvas* canvas, SubGhzViewReceiverModel* model) {
         break;
     default:
         canvas_draw_str(canvas, 44, 64, furi_string_get_cstr(model->frequency_str));
-        canvas_draw_str(canvas, 79, 64, furi_string_get_cstr(model->preset_str));
+        {
+            FuriString* mod_str_display = furi_string_alloc_set(furi_string_get_cstr(model->preset_str));
+            if(model->mod_shortcut_enabled) {
+                furi_string_append(mod_str_display, " (↑↓)");
+            }
+            canvas_draw_str(canvas, 79, 64, furi_string_get_cstr(mod_str_display));
+            furi_string_free(mod_str_display);
+        }
         canvas_draw_str(canvas, 97, 64, furi_string_get_cstr(model->history_stat_str));
         break;
     }
@@ -337,27 +345,64 @@ bool subghz_view_receiver_input(InputEvent* event, void* context) {
 
     if(event->key == InputKeyBack && event->type == InputTypeShort) {
         subghz_receiver->callback(SubGhzCustomEventViewReceiverBack, subghz_receiver->context);
-    } else if(
-        event->key == InputKeyUp &&
-        (event->type == InputTypeShort || event->type == InputTypeRepeat)) {
-        with_view_model(
-            subghz_receiver->view,
-            SubGhzViewReceiverModel * model,
-            {
-                if(model->idx != 0) model->idx--;
-            },
-            true);
-    } else if(
-        event->key == InputKeyDown &&
-        (event->type == InputTypeShort || event->type == InputTypeRepeat)) {
-        with_view_model(
-            subghz_receiver->view,
-            SubGhzViewReceiverModel * model,
-            {
-                if((model->history_item != 0) && (model->idx != model->history_item - 1))
-                    model->idx++;
-            },
-            true);
+    } else if((event->key == InputKeyUp || event->key == InputKeyDown) &&
+                (event->type == InputTypeShort || event->type == InputTypeRepeat)) {
+          bool mod_shortcut_enabled = false;
+          with_view_model(
+              subghz_receiver->view,
+              SubGhzViewReceiverModel * model,
+              {
+                  mod_shortcut_enabled = model->mod_shortcut_enabled;
+              },
+              false);
+          if(mod_shortcut_enabled) {
+              // Static variable to keep track of the current modulation preset.
+              // The available presets are defined by the submenu indices:
+              // SubmenuIndexPricenton_433 ... SubmenuIndexSecPlus_v2_390_00.
+              static uint8_t current_mod_index = SubmenuIndexPricenton_433;
+              if(event->key == InputKeyUp) {
+                  if(current_mod_index == SubmenuIndexPricenton_433) {
+                      current_mod_index = SubmenuIndexSecPlus_v2_390_00;  // wrap-around
+                  } else {
+                      current_mod_index--;
+                  }
+              } else if(event->key == InputKeyDown) {
+                  if(current_mod_index == SubmenuIndexSecPlus_v2_390_00) {
+                      current_mod_index = SubmenuIndexPricenton_433;  // wrap-around
+                  } else {
+                      current_mod_index++;
+                  }
+              }
+              // Chain the events:
+              // 1. Enter the config scene.
+              subghz_receiver->callback(SubGhzCustomEventViewReceiverConfig, subghz_receiver->context);
+              // 2. Trigger the modulation preset change (using an existing submenu event).
+              subghz_receiver->callback((SubGhzCustomEvent)current_mod_index, subghz_receiver->context);
+              // 3. Return to RX mode.
+              subghz_receiver->callback(SubGhzCustomEventViewReceiverBack, subghz_receiver->context);
+              return true;
+          } else {
+              // Fallback to original behavior if the shortcut is disabled.
+              if(event->key == InputKeyUp) {
+                  with_view_model(
+                      subghz_receiver->view,
+                      SubGhzViewReceiverModel * model,
+                      {
+                          if(model->idx != 0) model->idx--;
+                      },
+                      true);
+              } else if(event->key == InputKeyDown) {
+                  with_view_model(
+                      subghz_receiver->view,
+                      SubGhzViewReceiverModel * model,
+                      {
+                          if((model->history_item != 0) && (model->idx != model->history_item - 1))
+                              model->idx++;
+                      },
+                      true);
+              }
+          }
+
     } else if(event->key == InputKeyLeft && event->type == InputTypeShort) {
         subghz_receiver->callback(SubGhzCustomEventViewReceiverConfig, subghz_receiver->context);
     } else if(event->key == InputKeyOk && event->type == InputTypeShort) {
@@ -432,6 +477,7 @@ SubGhzViewReceiver* subghz_view_receiver_alloc(void) {
             model->bar_show = SubGhzViewReceiverBarShowDefault;
             model->history = malloc(sizeof(SubGhzReceiverHistory));
             SubGhzReceiverMenuItemArray_init(model->history->data);
+            model->mod_shortcut_enabled = true;
         },
         true);
     subghz_receiver->timer =
